@@ -20,21 +20,14 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.VideoView
-import androidx.annotation.RequiresApi
 import androidx.cardview.widget.CardView
+import androidx.core.view.isVisible
 import androidx.core.widget.doOnTextChanged
 import androidx.lifecycle.MutableLiveData
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import cc.microblock.TGStickerProvider.BuildConfig
-import cc.microblock.TGStickerProvider.R
+import cc.microblock.TGStickerProvider.*
 import cc.microblock.TGStickerProvider.databinding.ActivityMainBinding
-import cc.microblock.TGStickerProvider.destDataPath
-import cc.microblock.TGStickerProvider.exposedPath
-import cc.microblock.TGStickerProvider.nomediaPath2
-import cc.microblock.TGStickerProvider.realDataPath
-import cc.microblock.TGStickerProvider.stickerDataPath
-import cc.microblock.TGStickerProvider.tgspDataPath
 import cc.microblock.TGStickerProvider.ui.activity.base.BaseActivity
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.bumptech.glide.Glide
@@ -129,7 +122,7 @@ class RecyclerAdapterStickerList(private val act: MainActivity) :
                 holder.imageView.visibility = View.GONE
                 holder.videoCard.visibility = View.GONE
                 holder.videoView.stopPlayback()
-                holder.rmBtn.visibility = View.GONE
+                holder.rmBtn.visibility = View.VISIBLE
                 holder.syncBtn.visibility = View.GONE
                 holder.unsupported.visibility = View.VISIBLE
                 holder.unsupported.text = "不支持的表情包"
@@ -152,27 +145,58 @@ class RecyclerAdapterStickerList(private val act: MainActivity) :
             });
         }
 
-        holder.rmBtn.setOnClickListener {
-            // dialog confirm
+        fun deleteDialog(title: String, message: String, icon: Int, action: () -> Unit) {
             AlertDialog.Builder(act)
-                .setTitle("删除已同步的表情包集 ${s.name}")
-                .setMessage("你将删除已同步的表情包集 ${s.name}，这将会删除 ${s.syncedState.all} 个表情包文件，是否继续？")
-                .setIcon(android.R.drawable.ic_dialog_alert)
+                .setTitle(title)
+                .setMessage(message)
+                .setIcon(icon)
                 .setPositiveButton("删除") { _, _ ->
                     val pd = ProgressDialog(act)
                     pd.setMessage("正在删除")
                     pd.show()
                     pd.setCancelable(false)
                     Thread {
-                        // val remoteFolder = "${destDataPath}tgSync_${s.id}"
-                        // File(remoteFolder).deleteRecursively()
-                        File("$realDataPath/tgSync_${s.id}").deleteRecursively()
-                        act.runOnUiThread { pd.setMessage("正在更新列表") }
+                        action()
+                        act.runOnUiThread {
+                            pd.setCancelable(true)
+                            pd.setMessage("正在更新列表")
+                        }
                         act.updateStickerList()
                         act.runOnUiThread { pd.dismiss() }
                     }.start()
                 }
                 .setNegativeButton("算了", null).show()
+        }
+
+        val dialogDelExported = {
+            deleteDialog(
+                title = "删除导出缓存 ${s.name}",
+                message = "你将删除已缓存的表情包集 ${s.name}，这不会影响已同步的表情包，是否继续？",
+                icon = android.R.drawable.ic_menu_delete,
+            ) {
+                File("$destDataPath/tgSync_${s.id}").deleteRecursively()
+                File("$stickerDataPath/${s.hash}").delete()
+            }
+        }
+
+        holder.rmBtn.setOnClickListener {
+            // dialog confirm
+            if (holder.unsupported.isVisible) {
+                dialogDelExported()
+            } else {
+                deleteDialog(
+                    title = "删除已同步的表情包集 ${s.name}",
+                    message = "你将删除已同步的表情包集 ${s.name}，这将会删除 ${s.syncedState.all} 个表情包文件，是否继续？",
+                    icon = android.R.drawable.ic_dialog_alert,
+                ) {
+                    File("$realDataPath/tgSync_${s.id}").deleteRecursively()
+                }
+            }
+        }
+
+        holder.rmBtn.setOnLongClickListener {
+            dialogDelExported()
+            true
         }
         //        holder.hash.text = stickerList[position].hash
     }
@@ -326,7 +350,23 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     }
 
     var filter = ""
+    var requiresSyncOnly = false
     var useHighQualityGif = false
+
+    fun onFilterChanged(list: List<StickerInfo>? = stickerList.value) {
+        if (list == null) return
+        (binding.stickerManageView.adapter as RecyclerAdapterStickerList).stickerList = list.filter {
+            if (requiresSyncOnly
+                && it.syncedState.all >= it.remoteState.all
+                && it.syncedState.highQuality >= it.remoteState.highQuality
+            ) return@filter false
+
+            it.name.contains(filter, ignoreCase = true) || it.id.contains(filter, ignoreCase = true)
+                    || it.type.contains(filter, ignoreCase = true)
+        }
+        binding.stickerManageView.adapter?.notifyDataSetChanged()
+    }
+
     @SuppressLint("NotifyDataSetChanged")
     override fun onCreate() {
         refreshModuleStatus()
@@ -335,6 +375,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         binding.button2.setOnClickListener {
             binding.tips.visibility = View.GONE
             binding.manage.visibility = View.VISIBLE
+        }
+        binding.requiresSyncOnlySwitch.setOnCheckedChangeListener { _, isChecked ->
+            requiresSyncOnly = isChecked
+            onFilterChanged()
         }
         binding.gifQualitySwitch.setOnCheckedChangeListener { _, isChecked ->
             useHighQualityGif = isChecked
@@ -433,12 +477,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
         binding.searchBar.doOnTextChanged() { text, _, _, _ ->
             filter = text.toString()
-            (binding.stickerManageView.adapter as RecyclerAdapterStickerList).stickerList =
-                stickerList.value?.filter {
-                    it.name.contains(filter, ignoreCase = true) || it.id.contains(filter, ignoreCase = true)
-                            || it.type.contains(filter, ignoreCase = true)
-                } ?: listOf()
-            binding.stickerManageView.adapter?.notifyDataSetChanged()
+            onFilterChanged()
         }
 
         binding.stickerManageView.layoutManager = LinearLayoutManager(this)
@@ -462,13 +501,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 //            YLog.error("Error while setting max fling velocity", e)
 //        }
 
-        stickerList.observe(this) {
+        stickerList.observe(this) { list ->
             runOnUiThread {
-                (binding.stickerManageView.adapter as RecyclerAdapterStickerList).stickerList = it.filter {
-                    it.name.contains(filter, ignoreCase = true) || it.id.contains(filter, ignoreCase = true)
-                            || it.type.contains(filter, ignoreCase = true)
-                }
-                binding.stickerManageView.adapter?.notifyDataSetChanged()
+                onFilterChanged(list)
             }
         }
     }
@@ -490,19 +525,22 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
         val ignoreIds = try {
             File("$exposedPath/ignore.txt").run {
-                if (exists()) readLines().filterNot { it.startsWith("#") }
+                if (exists())
+                    readLines().filterNot { it.isEmpty() || it.startsWith("#") }
+                        .map { it.substringBefore('#').trim() }
+                        .toSet()
                 else {
                     writeText(
                         """# write the ignored sticker IDs here
                             |# separate with line breaks
                         """.trimMargin()
                     )
-                    emptyList()
+                    emptySet()
                 }
             }
         } catch (e: Exception) {
             YLog.error("Error while reading ignore.txt", e)
-            emptyList()
+            emptySet()
         }
         YLog.info("ignoreIds: [${ignoreIds.joinToString { "`$it`" }}]")
 

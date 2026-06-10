@@ -203,11 +203,16 @@
 
         </LinearLayout>
 
-        <Switch
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/requiresSyncOnlySwitch"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:text="只显示待同步表情包" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
             android:id="@+id/gifQualitySwitch"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
+            android:layout_height="32dp"
             android:text="高清 Gif（慢）" />
 
         <TextView
